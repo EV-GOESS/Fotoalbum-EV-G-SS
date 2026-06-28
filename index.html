@@ -425,11 +425,403 @@
 
 <script>
 // ══════════════════════════════════════════════════════════════════
-//  ⚙️  EINSTELLUNGEN
+//  EINSTELLUNGEN
 // ══════════════════════════════════════════════════════════════════
 const CLOUDINARY_CLOUD_NAME    = "xz0mzkdf";
 const CLOUDINARY_UPLOAD_PRESET = "EV-Goess";
+const FIREBASE_URL             = "https://ev-goess-default-rtdb.europe-west1.firebasedatabase.app";
 // ══════════════════════════════════════════════════════════════════
+
+const DEFAULT_ALBUMS = [
+  { id: "turnier-2024", name: "Turnier 2024", icon: "🏆" },
+  { id: "vereinsfest",  name: "Vereinsfest",  icon: "🎉" },
+  { id: "training",     name: "Training",     icon: "🎯" },
+  { id: "mannschaft",   name: "Mannschaft",   icon: "👥" },
+];
+
+// ── Firebase Helfer ───────────────────────────────────────────────
+function fbKey(str) {
+  return str.replace(/[.#$\/\[\]]/g, "_");
+}
+
+async function fbGet(path) {
+  const res = await fetch(FIREBASE_URL + path + ".json");
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+async function fbSet(path, value) {
+  await fetch(FIREBASE_URL + path + ".json", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(value)
+  });
+}
+
+async function fbDelete(path) {
+  await fetch(FIREBASE_URL + path + ".json", { method: "DELETE" });
+}
+
+// ── Alben laden/speichern (Firebase) ─────────────────────────────
+async function loadAlbumsFromDB() {
+  try {
+    const data = await fbGet("/albums");
+    if (!data) return DEFAULT_ALBUMS;
+    return Object.values(data);
+  } catch { return DEFAULT_ALBUMS; }
+}
+
+async function saveAlbumsToDB(arr) {
+  try {
+    const obj = {};
+    arr.forEach(a => { obj[fbKey(a.id)] = a; });
+    await fbSet("/albums", obj);
+  } catch(e) { console.error("Album speichern:", e); }
+}
+
+// ── Fotos laden/speichern (Firebase) ─────────────────────────────
+async function loadPhotosFromDB(albumId) {
+  try {
+    const data = await fbGet("/photos/" + fbKey(albumId));
+    if (!data) return [];
+    return Object.values(data);
+  } catch { return []; }
+}
+
+async function savePhotoToDB(albumId, photo) {
+  try {
+    await fbSet("/photos/" + fbKey(albumId) + "/" + fbKey(photo.id), photo);
+  } catch(e) { console.error("Foto speichern:", e); }
+}
+
+async function deletePhotoFromDB(albumId, photoId) {
+  try {
+    await fbDelete("/photos/" + fbKey(albumId) + "/" + fbKey(photoId));
+  } catch(e) { console.error("Foto löschen:", e); }
+}
+
+// ── State ─────────────────────────────────────────────────────────
+let albums = [];
+let photos = {};
+let currentAlbumId = null;
+let lbIndex = 0;
+
+// ── Toast ─────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, color) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.style.background = color || "var(--green)";
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+}
+
+// ── Badge ─────────────────────────────────────────────────────────
+function updateBadge() {
+  const total = Object.values(photos).reduce((s, a) => s + (a ? a.length : 0), 0);
+  document.getElementById("header-badge").textContent =
+    total + " Fotos · " + albums.length + " Alben";
+}
+
+// ── HOME VIEW ─────────────────────────────────────────────────────
+function renderHome() {
+  document.getElementById("view-home").style.display = "";
+  document.getElementById("view-album").style.display = "none";
+  currentAlbumId = null;
+  renderAlbums();
+  updateBadge();
+}
+
+function renderAlbums() {
+  const grid = document.getElementById("albums-grid");
+  grid.innerHTML = "";
+
+  albums.forEach(album => {
+    const ps = photos[album.id] || [];
+    const thumb = ps[0];
+
+    const card = document.createElement("div");
+    card.className = "album-card";
+    card.onclick = () => openAlbum(album.id);
+
+    const thumbDiv = document.createElement("div");
+    thumbDiv.className = "album-card-thumb";
+    if (thumb) {
+      const img = document.createElement("img");
+      img.src = thumb.thumb || thumb.src; img.alt = "";
+      thumbDiv.appendChild(img);
+    } else {
+      const span = document.createElement("span");
+      span.className = "album-card-thumb-empty";
+      span.textContent = album.icon;
+      thumbDiv.appendChild(span);
+    }
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "album-card-name";
+    nameEl.textContent = album.name;
+
+    const cnt = document.createElement("div");
+    cnt.className = "album-card-count";
+    cnt.textContent = ps.length + (ps.length === 1 ? " Foto" : " Fotos");
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "album-delete-btn";
+    delBtn.innerHTML = "🗑";
+    delBtn.onclick = e => { e.stopPropagation(); deleteAlbum(album.id); };
+
+    card.appendChild(thumbDiv);
+    card.appendChild(nameEl);
+    card.appendChild(cnt);
+    card.appendChild(delBtn);
+    grid.appendChild(card);
+  });
+
+  const newCard = document.createElement("div");
+  newCard.className = "album-new";
+  newCard.onclick = toggleNewAlbumForm;
+  newCard.innerHTML = '<span style="font-size:28px">＋</span><span>Neues Album</span>';
+  grid.appendChild(newCard);
+}
+
+function toggleNewAlbumForm() {
+  const form = document.getElementById("new-album-form");
+  const visible = form.style.display !== "none";
+  form.style.display = visible ? "none" : "flex";
+  if (!visible) setTimeout(() => document.getElementById("new-album-input").focus(), 50);
+}
+function hideNewAlbumForm() {
+  document.getElementById("new-album-form").style.display = "none";
+  document.getElementById("new-album-input").value = "";
+}
+function handleAlbumFormKey(e) {
+  if (e.key === "Enter") createAlbum();
+  if (e.key === "Escape") hideNewAlbumForm();
+}
+async function createAlbum() {
+  const name = document.getElementById("new-album-input").value.trim();
+  if (!name) return;
+  const album = { id: "album-" + Date.now(), name, icon: "📁" };
+  albums.push(album);
+  await saveAlbumsToDB(albums);
+  hideNewAlbumForm();
+  renderAlbums();
+  updateBadge();
+  showToast('Album "' + name + '" erstellt');
+}
+async function deleteAlbum(id) {
+  if (!confirm("Album wirklich löschen?")) return;
+  albums = albums.filter(a => a.id !== id);
+  delete photos[id];
+  await saveAlbumsToDB(albums);
+  await fbDelete("/photos/" + fbKey(id));
+  renderAlbums();
+  updateBadge();
+  showToast("Album gelöscht");
+}
+
+// ── ALBUM VIEW ────────────────────────────────────────────────────
+async function openAlbum(id) {
+  currentAlbumId = id;
+  const album = albums.find(a => a.id === id);
+  document.getElementById("view-home").style.display = "none";
+  document.getElementById("view-album").style.display = "";
+  document.getElementById("album-icon").textContent = album.icon;
+  document.getElementById("album-title").textContent = album.name;
+  document.getElementById("album-count").textContent = "Lädt…";
+
+  photos[id] = await loadPhotosFromDB(id);
+  renderPhotos();
+  updateBadge();
+}
+function goHome() { renderHome(); }
+
+function renderPhotos() {
+  const ps = photos[currentAlbumId] || [];
+  document.getElementById("album-count").textContent = ps.length + " Fotos";
+  document.getElementById("album-empty").style.display = ps.length ? "none" : "";
+
+  const grid = document.getElementById("photos-grid");
+  grid.innerHTML = "";
+  ps.forEach((photo, idx) => {
+    const item = document.createElement("div");
+    item.className = "photo-item";
+    item.onclick = () => openLightbox(idx);
+
+    const img = document.createElement("img");
+    img.src = photo.thumb || photo.src;
+    img.alt = photo.name; img.loading = "lazy";
+
+    const overlay = document.createElement("div");
+    overlay.className = "photo-overlay";
+
+    const btnWrap = document.createElement("div");
+    btnWrap.className = "photo-overlay-btns";
+
+    const dlBtn = document.createElement("a");
+    dlBtn.className = "photo-dl-btn";
+    dlBtn.innerHTML = "⬇";
+    dlBtn.href = photo.src;
+    dlBtn.download = photo.name || ("foto_" + (idx + 1) + ".jpg");
+    dlBtn.target = "_blank";
+    dlBtn.onclick = e => e.stopPropagation();
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "photo-del-btn";
+    delBtn.innerHTML = "🗑";
+    delBtn.onclick = e => { e.stopPropagation(); deletePhoto(photo.id); };
+
+    btnWrap.appendChild(dlBtn);
+    btnWrap.appendChild(delBtn);
+    overlay.appendChild(btnWrap);
+    item.appendChild(img);
+    item.appendChild(overlay);
+    grid.appendChild(item);
+  });
+}
+
+async function deletePhoto(photoId) {
+  await deletePhotoFromDB(currentAlbumId, photoId);
+  photos[currentAlbumId] = (photos[currentAlbumId] || []).filter(p => p.id !== photoId);
+  renderPhotos();
+  updateBadge();
+  showToast("Foto gelöscht");
+}
+
+// ── CLOUDINARY UPLOAD ─────────────────────────────────────────────
+async function uploadToCloudinary(file, albumId, onProgress) {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  fd.append("folder", "ev-goss/" + albumId);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "https://api.cloudinary.com/v1_1/" + CLOUDINARY_CLOUD_NAME + "/image/upload");
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 90));
+    };
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        const r = JSON.parse(xhr.responseText);
+        onProgress(100);
+        resolve({
+          id: r.public_id,
+          src: r.secure_url,
+          thumb: r.secure_url.replace("/upload/", "/upload/w_400,h_400,c_fill/"),
+          name: file.name,
+          date: new Date().toLocaleDateString("de-AT")
+        });
+      } else {
+        reject(new Error("Fehler " + xhr.status + ": " + xhr.responseText));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Netzwerkfehler"));
+    xhr.send(fd);
+  });
+}
+
+// ── FILE UPLOAD ───────────────────────────────────────────────────
+function onDragOver(e) { e.preventDefault(); document.getElementById("upload-zone").classList.add("drag-over"); }
+function onDragLeave() { document.getElementById("upload-zone").classList.remove("drag-over"); }
+function onDrop(e) { e.preventDefault(); document.getElementById("upload-zone").classList.remove("drag-over"); handleFiles(e.dataTransfer.files); }
+function handleFileInput(e) { handleFiles(e.target.files); e.target.value = ""; }
+
+async function handleFiles(files) {
+  const arr = Array.from(files).filter(f => f.type.startsWith("image/"));
+  if (!arr.length) return;
+
+  const wrap = document.getElementById("progress-wrap");
+  wrap.innerHTML = "";
+
+  const bars = arr.map(f => {
+    const row = document.createElement("div"); row.className = "upload-progress";
+    const nm = document.createElement("span"); nm.className = "upload-progress-name"; nm.textContent = f.name;
+    const barWrap = document.createElement("div"); barWrap.className = "upload-bar-wrap";
+    const bar = document.createElement("div"); bar.className = "upload-bar"; bar.style.width = "0%";
+    const pct = document.createElement("span"); pct.className = "upload-pct"; pct.textContent = "0%";
+    barWrap.appendChild(bar); row.appendChild(nm); row.appendChild(barWrap); row.appendChild(pct);
+    wrap.appendChild(row);
+    return { bar, pct };
+  });
+
+  if (!photos[currentAlbumId]) photos[currentAlbumId] = [];
+  let uploaded = 0;
+
+  for (let i = 0; i < arr.length; i++) {
+    try {
+      // 1. Foto auf Cloudinary hochladen
+      const photo = await uploadToCloudinary(arr[i], currentAlbumId, p => {
+        bars[i].bar.style.width = p + "%";
+        bars[i].pct.textContent = p + "%";
+      });
+      // 2. URL in Firebase speichern → für ALLE sichtbar!
+      await savePhotoToDB(currentAlbumId, photo);
+      photos[currentAlbumId].push(photo);
+      uploaded++;
+      renderPhotos();
+      updateBadge();
+    } catch(err) {
+      bars[i].pct.textContent = "❌";
+      bars[i].bar.style.background = "var(--danger)";
+      showToast("Fehler: " + err.message, "#7a0000");
+    }
+  }
+
+  setTimeout(() => { wrap.innerHTML = ""; }, 1200);
+  if (uploaded > 0) {
+    showToast(uploaded + " Foto" + (uploaded > 1 ? "s" : "") + " für alle gespeichert ✓");
+    renderAlbums();
+  }
+}
+
+// ── LIGHTBOX ──────────────────────────────────────────────────────
+function updateLightboxContent() {
+  const ps = photos[currentAlbumId] || [];
+  const photo = ps[lbIndex];
+  document.getElementById("lightbox-img").src = photo.src;
+  document.getElementById("lb-counter").textContent = (lbIndex + 1) + " / " + ps.length;
+  const dl = document.getElementById("lb-download");
+  dl.href = photo.src;
+  dl.download = photo.name || ("foto_" + (lbIndex + 1) + ".jpg");
+  dl.target = "_blank";
+}
+function openLightbox(idx) {
+  lbIndex = idx;
+  const ps = photos[currentAlbumId] || [];
+  document.getElementById("lb-prev").style.display = ps.length > 1 ? "" : "none";
+  document.getElementById("lb-next").style.display = ps.length > 1 ? "" : "none";
+  document.getElementById("lightbox").classList.add("active");
+  updateLightboxContent();
+}
+function closeLightbox() { document.getElementById("lightbox").classList.remove("active"); }
+function lbNav(e, dir) {
+  e.stopPropagation();
+  const ps = photos[currentAlbumId] || [];
+  lbIndex = (lbIndex + dir + ps.length) % ps.length;
+  updateLightboxContent();
+}
+document.addEventListener("keydown", e => {
+  const lb = document.getElementById("lightbox");
+  if (!lb.classList.contains("active")) return;
+  if (e.key === "ArrowLeft") lbNav({ stopPropagation: ()=>{} }, -1);
+  if (e.key === "ArrowRight") lbNav({ stopPropagation: ()=>{} }, 1);
+  if (e.key === "Escape") closeLightbox();
+});
+
+// ── INIT ──────────────────────────────────────────────────────────
+(async () => {
+  showToast("Lade Daten…", "var(--green)");
+  albums = await loadAlbumsFromDB();
+  // Vorschaubilder für alle Alben laden
+  for (const album of albums) {
+    const ps = await loadPhotosFromDB(album.id);
+    photos[album.id] = ps;
+  }
+  renderHome();
+})();
+</script>
 
 const ALBUMS_KEY = "ev-goss-albums-v3";
 
@@ -440,48 +832,69 @@ const DEFAULT_ALBUMS = [
   { id: "mannschaft",    name: "Mannschaft",    icon: "👥" },
 ];
 
-// ── Fotos direkt von Cloudinary laden (für alle Besucher) ─────────
-async function loadPhotosFromCloudinary(albumId) {
-  // Zuerst lokalen Cache laden (sofort sichtbar)
-  let cached = [];
+// ── Firebase: Fotos laden (für ALLE Besucher) ─────────────────────
+async function loadPhotosFromDB(albumId) {
   try {
-    const v = localStorage.getItem("ev-goss-photos-" + albumId);
-    if (v) cached = JSON.parse(v);
-  } catch {}
-
-  // Dann versuchen von Cloudinary zu laden
-  try {
-    const url = "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
-                "/image/list/ev-goss-" + albumId + ".json";
-    const res = await fetch(url + "?t=" + Date.now());
-    if (res.ok) {
-      const data = await res.json();
-      const cloudPhotos = (data.resources || []).map(r => ({
-        id: r.public_id,
-        publicId: r.public_id,
-        src: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
-             "/image/upload/" + r.public_id + "." + (r.format || "jpg"),
-        thumb: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
-               "/image/upload/w_400,h_400,c_fill/" + r.public_id + "." + (r.format || "jpg"),
-        name: r.public_id.split("/").pop(),
-        date: r.created_at ? new Date(r.created_at).toLocaleDateString("de-AT") : ""
-      }));
-      if (cloudPhotos.length > 0) {
-        // Cloudinary hat Fotos → Cache aktualisieren und zurückgeben
-        savePhotosCache(albumId, cloudPhotos);
-        return cloudPhotos;
-      }
-    }
+    const res = await fetch(FIREBASE_URL + "/photos/" + albumId + ".json");
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!data) return [];
+    // Firebase gibt ein Objekt zurück → in Array umwandeln
+    return Object.values(data);
   } catch(e) {
-    console.log("Cloudinary nicht erreichbar, nutze Cache");
+    console.error("Firebase Ladefehler:", e);
+    return [];
   }
-
-  // Fallback: lokaler Cache
-  return cached;
 }
 
-function savePhotosCache(albumId, ps) {
-  try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps)); } catch {}
+// ── Firebase: Foto speichern (für ALLE Besucher sichtbar) ─────────
+async function savePhotoToDB(albumId, photo) {
+  try {
+    await fetch(FIREBASE_URL + "/photos/" + albumId + "/" + photo.id.replace(/[.#$/[\]]/g, "_") + ".json", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(photo)
+    });
+  } catch(e) {
+    console.error("Firebase Speicherfehler:", e);
+  }
+}
+
+// ── Firebase: Foto löschen ────────────────────────────────────────
+async function deletePhotoFromDB(albumId, photoId) {
+  try {
+    await fetch(FIREBASE_URL + "/photos/" + albumId + "/" + photoId.replace(/[.#$/[\]]/g, "_") + ".json", {
+      method: "DELETE"
+    });
+  } catch(e) {
+    console.error("Firebase Löschfehler:", e);
+  }
+}
+
+// ── Firebase: Alben laden ─────────────────────────────────────────
+async function loadAlbumsFromDB() {
+  try {
+    const res = await fetch(FIREBASE_URL + "/albums.json");
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data) return null;
+    return Object.values(data);
+  } catch { return null; }
+}
+
+// ── Firebase: Alben speichern ─────────────────────────────────────
+async function saveAlbumsToDB(albumsArr) {
+  try {
+    const obj = {};
+    albumsArr.forEach(a => { obj[a.id] = a; });
+    await fetch(FIREBASE_URL + "/albums.json", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(obj)
+    });
+  } catch(e) {
+    console.error("Firebase Album-Speicherfehler:", e);
+  }
 }
 
 // ── Albums im localStorage (nur Metadaten, keine Bilder) ─────────
