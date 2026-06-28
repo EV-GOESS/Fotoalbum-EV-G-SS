@@ -250,11 +250,21 @@
       display: flex; align-items: center; justify-content: center;
     }
     .photo-item:hover .photo-overlay { opacity: 1; }
+    .photo-overlay-btns {
+      display: flex; gap: 8px;
+    }
     .photo-del-btn {
       background: rgba(192,57,43,.85); border: none;
       border-radius: 6px; color: #fff;
       padding: 7px 9px; cursor: pointer; font-size: 15px;
     }
+    .photo-dl-btn {
+      background: rgba(30,122,46,.85); border: none;
+      border-radius: 6px; color: #fff;
+      padding: 7px 9px; cursor: pointer; font-size: 15px;
+      text-decoration: none; display: flex; align-items: center;
+    }
+    .photo-dl-btn:hover { background: rgba(40,160,59,.95); }
 
     /* ── EMPTY STATE ── */
     .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
@@ -401,6 +411,9 @@
 <!-- LIGHTBOX -->
 <div class="lightbox" id="lightbox" onclick="closeLightbox()">
   <button class="lb-close" onclick="closeLightbox()">✕</button>
+  <a id="lb-download" onclick="event.stopPropagation()" title="Herunterladen"
+    style="position:absolute;top:20px;right:74px;background:rgba(30,122,46,.85);border:none;border-radius:50%;width:44px;height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;font-size:19px;text-decoration:none;transition:background .15s;"
+    onmouseover="this.style.background='rgba(40,160,59,.95)'" onmouseout="this.style.background='rgba(30,122,46,.85)'">⬇</a>
   <button class="lb-nav" id="lb-prev" onclick="lbNav(event, -1)">&#8249;</button>
   <img class="lightbox-img" id="lightbox-img" src="" alt="" onclick="event.stopPropagation()" />
   <button class="lb-nav" id="lb-next" onclick="lbNav(event, 1)">&#8250;</button>
@@ -613,12 +626,25 @@ function renderPhotos() {
     const overlay = document.createElement("div");
     overlay.className = "photo-overlay";
 
+    const btnWrap = document.createElement("div");
+    btnWrap.className = "photo-overlay-btns";
+
+    const dlBtn = document.createElement("a");
+    dlBtn.className = "photo-dl-btn";
+    dlBtn.innerHTML = "⬇";
+    dlBtn.title = "Herunterladen";
+    dlBtn.href = photo.src;
+    dlBtn.download = photo.name || ("foto_" + (idx + 1) + ".jpg");
+    dlBtn.onclick = e => e.stopPropagation();
+
     const delBtn = document.createElement("button");
     delBtn.className = "photo-del-btn";
     delBtn.innerHTML = "🗑";
     delBtn.onclick = e => { e.stopPropagation(); deletePhoto(photo.id); };
 
-    overlay.appendChild(delBtn);
+    btnWrap.appendChild(dlBtn);
+    btnWrap.appendChild(delBtn);
+    overlay.appendChild(btnWrap);
     item.appendChild(img);
     item.appendChild(overlay);
     grid.appendChild(item);
@@ -682,23 +708,30 @@ async function handleFiles(files) {
 }
 
 // ── LIGHTBOX ─────────────────────────────────────────────────────────────
+function updateLightboxContent() {
+  const ps = photos[currentAlbumId] || [];
+  const photo = ps[lbIndex];
+  document.getElementById("lightbox-img").src = photo.src;
+  document.getElementById("lb-counter").textContent = (lbIndex + 1) + " / " + ps.length;
+  const dl = document.getElementById("lb-download");
+  dl.href = photo.src;
+  dl.download = photo.name || ("foto_" + (lbIndex + 1) + ".jpg");
+}
 function openLightbox(idx) {
   lbIndex = idx;
   const ps = photos[currentAlbumId] || [];
-  document.getElementById("lightbox-img").src = ps[lbIndex].src;
-  document.getElementById("lb-counter").textContent = (lbIndex + 1) + " / " + ps.length;
   const showNav = ps.length > 1;
   document.getElementById("lb-prev").style.display = showNav ? "" : "none";
   document.getElementById("lb-next").style.display = showNav ? "" : "none";
   document.getElementById("lightbox").classList.add("active");
+  updateLightboxContent();
 }
 function closeLightbox() { document.getElementById("lightbox").classList.remove("active"); }
 function lbNav(e, dir) {
   e.stopPropagation();
   const ps = photos[currentAlbumId] || [];
   lbIndex = (lbIndex + dir + ps.length) % ps.length;
-  document.getElementById("lightbox-img").src = ps[lbIndex].src;
-  document.getElementById("lb-counter").textContent = (lbIndex + 1) + " / " + ps.length;
+  updateLightboxContent();
 }
 document.addEventListener("keydown", e => {
   const lb = document.getElementById("lightbox");
