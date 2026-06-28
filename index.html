@@ -467,13 +467,6 @@ function savePhotosCache(albumId, ps) {
   try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps)); } catch {}
 }
 
-const DEFAULT_ALBUMS = [
-  { id: "turnier-2024",  name: "Turnier 2024",  icon: "🏆" },
-  { id: "vereinsfest",   name: "Vereinsfest",   icon: "🎉" },
-  { id: "training",      name: "Training",      icon: "🎯" },
-  { id: "mannschaft",    name: "Mannschaft",    icon: "👥" },
-];
-
 // ── Albums im localStorage (nur Metadaten, keine Bilder) ─────────
 function loadAlbums() {
   try {
