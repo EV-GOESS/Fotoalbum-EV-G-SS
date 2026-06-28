@@ -424,9 +424,14 @@
 <div class="toast" id="toast"></div>
 
 <script>
-// ── Storage helpers ──────────────────────────────────────────────────────
-const ALBUMS_KEY = "ev-goss-albums";
-const PHOTOS_KEY = "ev-goss-photos";
+// ══════════════════════════════════════════════════════════════════
+//  ⚙️  CLOUDINARY EINSTELLUNGEN – hier deine Daten eintragen!
+// ══════════════════════════════════════════════════════════════════
+const CLOUDINARY_CLOUD_NAME  = "xz0mzkdf";
+const CLOUDINARY_UPLOAD_PRESET = "EV-Göss";
+// ══════════════════════════════════════════════════════════════════
+
+const ALBUMS_KEY = "ev-goss-albums-v2";
 
 const DEFAULT_ALBUMS = [
   { id: "turnier-2024",  name: "Turnier 2024",  icon: "🏆" },
@@ -435,6 +440,7 @@ const DEFAULT_ALBUMS = [
   { id: "mannschaft",    name: "Mannschaft",    icon: "👥" },
 ];
 
+// ── Albums im localStorage (nur Metadaten, keine Bilder) ─────────
 function loadAlbums() {
   try {
     const v = localStorage.getItem(ALBUMS_KEY);
@@ -444,64 +450,121 @@ function loadAlbums() {
 function saveAlbums(a) {
   localStorage.setItem(ALBUMS_KEY, JSON.stringify(a));
 }
-function loadPhotos() {
-  try {
-    const v = localStorage.getItem(PHOTOS_KEY);
-    return v ? JSON.parse(v) : {};
-  } catch { return {}; }
-}
-function savePhotos(p) {
-  try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(p)); }
-  catch(e) { showToast("Speicher voll – ältere Fotos löschen"); }
-}
 
-// ── State ────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────
 let albums = loadAlbums();
-let photos = loadPhotos();
+let photos = {}; // { albumId: [{id, src, thumb, name, publicId}] }
 let currentAlbumId = null;
 let lbIndex = 0;
 
-// ── Toast ────────────────────────────────────────────────────────────────
-let toastTimer = null;
-function showToast(msg) {
-  const t = document.getElementById("toast");
-  t.textContent = msg; t.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+// ── Cloudinary nicht konfiguriert? ────────────────────────────────
+function isConfigured() {
+  return CLOUDINARY_CLOUD_NAME !== "DEIN_CLOUD_NAME" &&
+         CLOUDINARY_UPLOAD_PRESET !== "DEIN_UPLOAD_PRESET";
 }
 
-// ── Badge ────────────────────────────────────────────────────────────────
+// ── Cloudinary: Foto hochladen ────────────────────────────────────
+async function uploadToCloudinary(file, albumId, onProgress) {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+  fd.append("folder", "ev-goss/" + albumId);
+  fd.append("context", "album=" + albumId);
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "https://api.cloudinary.com/v1_1/" + CLOUDINARY_CLOUD_NAME + "/image/upload");
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 90));
+    };
+    xhr.onload = () => {
+      if (xhr.status === 200) {
+        const r = JSON.parse(xhr.responseText);
+        onProgress(100);
+        resolve({
+          id: r.public_id,
+          publicId: r.public_id,
+          src: r.secure_url,
+          thumb: r.secure_url.replace("/upload/", "/upload/w_400,h_400,c_fill/"),
+          name: file.name,
+          date: new Date().toLocaleDateString("de-AT")
+        });
+      } else {
+        reject(new Error("Upload fehlgeschlagen: " + xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Netzwerkfehler"));
+    xhr.send(fd);
+  });
+}
+
+// ── Cloudinary: Fotos eines Albums laden ─────────────────────────
+async function loadPhotosFromCloudinary(albumId) {
+  // Wir speichern die Foto-Metadaten (URL + publicId) im localStorage
+  // als Cache, damit es schnell lädt
+  const key = "ev-goss-photos-" + albumId;
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : [];
+  } catch { return []; }
+}
+function savePhotosCache(albumId, ps) {
+  try {
+    localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps));
+  } catch(e) {
+    // Cache voll – nur die letzten 50 merken
+    const trimmed = ps.slice(-50);
+    try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(trimmed)); } catch {}
+  }
+}
+
+// ── Cloudinary: Foto löschen (über API) ──────────────────────────
+// Hinweis: Löschen via unsigned preset nicht möglich → nur aus Cache entfernen
+function removePhotoFromCache(albumId, photoId) {
+  photos[albumId] = (photos[albumId] || []).filter(p => p.id !== photoId);
+  savePhotosCache(albumId, photos[albumId]);
+}
+
+// ── Toast ─────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, color) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.style.background = color || "var(--green)";
+  t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 3200);
+}
+
+// ── Badge ─────────────────────────────────────────────────────────
 function updateBadge() {
   const total = Object.values(photos).reduce((s, a) => s + (a ? a.length : 0), 0);
   document.getElementById("header-badge").textContent =
     total + " Fotos · " + albums.length + " Alben";
 }
 
-// ── Image compression ────────────────────────────────────────────────────
-function compressImage(file, maxWidth = 1200, quality = 0.82) {
-  return new Promise(resolve => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let w = img.width, h = img.height;
-        if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/jpeg", quality));
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
+// ── Konfigurationswarnung ─────────────────────────────────────────
+function showConfigWarning() {
+  const existing = document.getElementById("config-warning");
+  if (existing) return;
+  const warn = document.createElement("div");
+  warn.id = "config-warning";
+  warn.style.cssText = "background:#7a3000;border:1px solid #c85000;border-radius:10px;padding:14px 18px;margin-bottom:20px;font-size:13px;line-height:1.6;";
+  warn.innerHTML = `
+    <strong style="color:#ffb347;font-size:14px;">⚙️ Cloudinary noch nicht eingerichtet</strong><br>
+    Öffne die HTML-Datei im Texteditor und trage oben im Script deinen
+    <strong>Cloud Name</strong> und <strong>Upload Preset</strong> ein.<br>
+    <a href="https://cloudinary.com" target="_blank" style="color:#ffb347;">→ cloudinary.com</a> (kostenlos registrieren)
+  `;
+  document.getElementById("view-home").insertBefore(warn, document.getElementById("view-home").firstChild);
 }
 
-// ── HOME VIEW ────────────────────────────────────────────────────────────
+// ── HOME VIEW ─────────────────────────────────────────────────────
 function renderHome() {
   document.getElementById("view-home").style.display = "";
   document.getElementById("view-album").style.display = "none";
   currentAlbumId = null;
+  if (!isConfigured()) showConfigWarning();
   renderAlbums();
   updateBadge();
 }
@@ -511,8 +574,9 @@ function renderAlbums() {
   grid.innerHTML = "";
 
   albums.forEach(album => {
-    const count = (photos[album.id] || []).length;
-    const thumb = (photos[album.id] || [])[0];
+    const ps = photos[album.id] || [];
+    const count = ps.length;
+    const thumb = ps[0];
 
     const card = document.createElement("div");
     card.className = "album-card";
@@ -522,7 +586,7 @@ function renderAlbums() {
     thumbDiv.className = "album-card-thumb";
     if (thumb) {
       const img = document.createElement("img");
-      img.src = thumb.src; img.alt = "";
+      img.src = thumb.thumb || thumb.src; img.alt = "";
       thumbDiv.appendChild(img);
     } else {
       const span = document.createElement("span");
@@ -551,7 +615,6 @@ function renderAlbums() {
     grid.appendChild(card);
   });
 
-  // "+ Neues Album" card
   const newCard = document.createElement("div");
   newCard.className = "album-new";
   newCard.onclick = toggleNewAlbumForm;
@@ -585,24 +648,29 @@ function createAlbum() {
   showToast('Album "' + name + '" erstellt');
 }
 function deleteAlbum(id) {
-  if (!confirm("Album wirklich löschen?")) return;
+  if (!confirm("Album wirklich löschen? (Fotos auf Cloudinary bleiben gespeichert)")) return;
   albums = albums.filter(a => a.id !== id);
   delete photos[id];
+  localStorage.removeItem("ev-goss-photos-" + id);
   saveAlbums(albums);
-  savePhotos(photos);
   renderAlbums();
   updateBadge();
   showToast("Album gelöscht");
 }
 
-// ── ALBUM VIEW ───────────────────────────────────────────────────────────
-function openAlbum(id) {
+// ── ALBUM VIEW ────────────────────────────────────────────────────
+async function openAlbum(id) {
   currentAlbumId = id;
   const album = albums.find(a => a.id === id);
   document.getElementById("view-home").style.display = "none";
   document.getElementById("view-album").style.display = "";
   document.getElementById("album-icon").textContent = album.icon;
   document.getElementById("album-title").textContent = album.name;
+
+  // Lade gecachte Fotos sofort
+  if (!photos[id]) {
+    photos[id] = await loadPhotosFromCloudinary(id);
+  }
   renderPhotos();
   updateBadge();
 }
@@ -621,7 +689,8 @@ function renderPhotos() {
     item.onclick = () => openLightbox(idx);
 
     const img = document.createElement("img");
-    img.src = photo.src; img.alt = photo.name; img.loading = "lazy";
+    img.src = photo.thumb || photo.src;
+    img.alt = photo.name; img.loading = "lazy";
 
     const overlay = document.createElement("div");
     overlay.className = "photo-overlay";
@@ -635,6 +704,7 @@ function renderPhotos() {
     dlBtn.title = "Herunterladen";
     dlBtn.href = photo.src;
     dlBtn.download = photo.name || ("foto_" + (idx + 1) + ".jpg");
+    dlBtn.target = "_blank";
     dlBtn.onclick = e => e.stopPropagation();
 
     const delBtn = document.createElement("button");
@@ -652,14 +722,13 @@ function renderPhotos() {
 }
 
 function deletePhoto(photoId) {
-  photos[currentAlbumId] = (photos[currentAlbumId] || []).filter(p => p.id !== photoId);
-  savePhotos(photos);
+  removePhotoFromCache(currentAlbumId, photoId);
   renderPhotos();
   updateBadge();
-  showToast("Foto gelöscht");
+  showToast("Foto aus Album entfernt");
 }
 
-// ── FILE UPLOAD ──────────────────────────────────────────────────────────
+// ── FILE UPLOAD ───────────────────────────────────────────────────
 function onDragOver(e) { e.preventDefault(); document.getElementById("upload-zone").classList.add("drag-over"); }
 function onDragLeave() { document.getElementById("upload-zone").classList.remove("drag-over"); }
 function onDrop(e) {
@@ -673,41 +742,57 @@ function handleFileInput(e) {
 }
 
 async function handleFiles(files) {
+  if (!isConfigured()) {
+    showToast("⚠️ Bitte zuerst Cloudinary einrichten!", "#7a3000");
+    return;
+  }
   const arr = Array.from(files).filter(f => f.type.startsWith("image/"));
   if (!arr.length) return;
 
   const wrap = document.getElementById("progress-wrap");
   wrap.innerHTML = "";
 
-  // Create progress bars
   const bars = arr.map(f => {
     const row = document.createElement("div"); row.className = "upload-progress";
-    const name = document.createElement("span"); name.className = "upload-progress-name"; name.textContent = f.name;
+    const nm = document.createElement("span"); nm.className = "upload-progress-name"; nm.textContent = f.name;
     const barWrap = document.createElement("div"); barWrap.className = "upload-bar-wrap";
     const bar = document.createElement("div"); bar.className = "upload-bar"; bar.style.width = "0%";
     const pct = document.createElement("span"); pct.className = "upload-pct"; pct.textContent = "0%";
-    barWrap.appendChild(bar); row.appendChild(name); row.appendChild(barWrap); row.appendChild(pct);
+    barWrap.appendChild(bar); row.appendChild(nm); row.appendChild(barWrap); row.appendChild(pct);
     wrap.appendChild(row);
     return { bar, pct };
   });
 
   if (!photos[currentAlbumId]) photos[currentAlbumId] = [];
+  let uploaded = 0;
 
   for (let i = 0; i < arr.length; i++) {
-    const src = await compressImage(arr[i]);
-    photos[currentAlbumId].push({ id: "p" + Date.now() + i, src, name: arr[i].name, date: new Date().toLocaleDateString("de-AT") });
-    bars[i].bar.style.width = "100%";
-    bars[i].pct.textContent = "100%";
+    try {
+      const photo = await uploadToCloudinary(arr[i], currentAlbumId, pct => {
+        bars[i].bar.style.width = pct + "%";
+        bars[i].pct.textContent = pct + "%";
+      });
+      photos[currentAlbumId].push(photo);
+      savePhotosCache(currentAlbumId, photos[currentAlbumId]);
+      uploaded++;
+      renderPhotos();
+      updateBadge();
+    } catch(err) {
+      bars[i].pct.textContent = "❌";
+      bars[i].bar.style.background = "var(--danger)";
+      showToast("Fehler bei: " + arr[i].name, "#7a0000");
+    }
   }
 
-  savePhotos(photos);
-  setTimeout(() => { wrap.innerHTML = ""; }, 800);
-  renderPhotos();
-  updateBadge();
-  showToast(arr.length + " Foto" + (arr.length > 1 ? "s" : "") + " hochgeladen");
+  setTimeout(() => { wrap.innerHTML = ""; }, 1200);
+  if (uploaded > 0) {
+    showToast(uploaded + " Foto" + (uploaded > 1 ? "s" : "") + " auf Cloudinary gespeichert ✓");
+    // Album-Übersicht aktualisieren
+    renderAlbums();
+  }
 }
 
-// ── LIGHTBOX ─────────────────────────────────────────────────────────────
+// ── LIGHTBOX ──────────────────────────────────────────────────────
 function updateLightboxContent() {
   const ps = photos[currentAlbumId] || [];
   const photo = ps[lbIndex];
@@ -716,6 +801,7 @@ function updateLightboxContent() {
   const dl = document.getElementById("lb-download");
   dl.href = photo.src;
   dl.download = photo.name || ("foto_" + (lbIndex + 1) + ".jpg");
+  dl.target = "_blank";
 }
 function openLightbox(idx) {
   lbIndex = idx;
@@ -741,8 +827,14 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") closeLightbox();
 });
 
-// ── INIT ─────────────────────────────────────────────────────────────────
-renderHome();
+// ── INIT ──────────────────────────────────────────────────────────
+// Gecachte Fotos für alle Alben vorladen
+(async () => {
+  for (const album of albums) {
+    photos[album.id] = await loadPhotosFromCloudinary(album.id);
+  }
+  renderHome();
+})();
 </script>
 </body>
 </html>
