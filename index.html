@@ -442,27 +442,44 @@ const DEFAULT_ALBUMS = [
 
 // ── Fotos direkt von Cloudinary laden (für alle Besucher) ─────────
 async function loadPhotosFromCloudinary(albumId) {
+  // Zuerst lokalen Cache laden (sofort sichtbar)
+  let cached = [];
+  try {
+    const v = localStorage.getItem("ev-goss-photos-" + albumId);
+    if (v) cached = JSON.parse(v);
+  } catch {}
+
+  // Dann versuchen von Cloudinary zu laden
   try {
     const url = "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
                 "/image/list/ev-goss-" + albumId + ".json";
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.resources || []).map(r => ({
-      id: r.public_id,
-      publicId: r.public_id,
-      src: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
-           "/image/upload/" + r.public_id + "." + (r.format || "jpg"),
-      thumb: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
-             "/image/upload/w_400,h_400,c_fill/" + r.public_id + "." + (r.format || "jpg"),
-      name: r.public_id.split("/").pop(),
-      date: r.created_at ? new Date(r.created_at).toLocaleDateString("de-AT") : ""
-    }));
+    const res = await fetch(url + "?t=" + Date.now());
+    if (res.ok) {
+      const data = await res.json();
+      const cloudPhotos = (data.resources || []).map(r => ({
+        id: r.public_id,
+        publicId: r.public_id,
+        src: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+             "/image/upload/" + r.public_id + "." + (r.format || "jpg"),
+        thumb: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+               "/image/upload/w_400,h_400,c_fill/" + r.public_id + "." + (r.format || "jpg"),
+        name: r.public_id.split("/").pop(),
+        date: r.created_at ? new Date(r.created_at).toLocaleDateString("de-AT") : ""
+      }));
+      if (cloudPhotos.length > 0) {
+        // Cloudinary hat Fotos → Cache aktualisieren und zurückgeben
+        savePhotosCache(albumId, cloudPhotos);
+        return cloudPhotos;
+      }
+    }
   } catch(e) {
-    console.error("Cloudinary Ladefehler:", e);
-    return [];
+    console.log("Cloudinary nicht erreichbar, nutze Cache");
   }
+
+  // Fallback: lokaler Cache
+  return cached;
 }
+
 function savePhotosCache(albumId, ps) {
   try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps)); } catch {}
 }
@@ -814,7 +831,8 @@ async function handleFiles(files) {
         bars[i].bar.style.width = pct + "%";
         bars[i].pct.textContent = pct + "%";
       });
-          photos[currentAlbumId].push(photo);
+      photos[currentAlbumId].push(photo);
+      // Sofort in Cache speichern → bleibt sichtbar!
       savePhotosCache(currentAlbumId, photos[currentAlbumId]);
       uploaded++;
       renderPhotos();
@@ -822,20 +840,14 @@ async function handleFiles(files) {
     } catch(err) {
       bars[i].pct.textContent = "❌";
       bars[i].bar.style.background = "var(--danger)";
-      showToast("Fehler bei: " + arr[i].name, "#7a0000");
+      showToast("Fehler bei: " + arr[i].name + " – " + err.message, "#7a0000");
     }
   }
 
   setTimeout(() => { wrap.innerHTML = ""; }, 1200);
   if (uploaded > 0) {
     showToast(uploaded + " Foto" + (uploaded > 1 ? "s" : "") + " gespeichert ✓");
-    // Neu von Cloudinary laden – dann sehen es alle Besucher
-    setTimeout(async () => {
-      photos[currentAlbumId] = await loadPhotosFromCloudinary(currentAlbumId);
-      renderPhotos();
-      renderAlbums();
-      updateBadge();
-    }, 2000);
+    renderAlbums();
   }
 }
 
