@@ -425,13 +425,47 @@
 
 <script>
 // ══════════════════════════════════════════════════════════════════
-//  ⚙️  CLOUDINARY EINSTELLUNGEN – hier deine Daten eintragen!
+//  ⚙️  EINSTELLUNGEN
 // ══════════════════════════════════════════════════════════════════
-const CLOUDINARY_CLOUD_NAME  = "xz0mzkdf";
+const CLOUDINARY_CLOUD_NAME    = "xz0mzkdf";
 const CLOUDINARY_UPLOAD_PRESET = "EV-Göss";
 // ══════════════════════════════════════════════════════════════════
 
-const ALBUMS_KEY = "ev-goss-albums-v2";
+const ALBUMS_KEY = "ev-goss-albums-v3";
+
+const DEFAULT_ALBUMS = [
+  { id: "turnier-2024",  name: "Turnier 2024",  icon: "🏆" },
+  { id: "vereinsfest",   name: "Vereinsfest",   icon: "🎉" },
+  { id: "training",      name: "Training",      icon: "🎯" },
+  { id: "mannschaft",    name: "Mannschaft",    icon: "👥" },
+];
+
+// ── Fotos direkt von Cloudinary laden (für alle Besucher) ─────────
+async function loadPhotosFromCloudinary(albumId) {
+  try {
+    const url = "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+                "/image/list/ev-goss-" + albumId + ".json";
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.resources || []).map(r => ({
+      id: r.public_id,
+      publicId: r.public_id,
+      src: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+           "/image/upload/" + r.public_id + "." + (r.format || "jpg"),
+      thumb: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+             "/image/upload/w_400,h_400,c_fill/" + r.public_id + "." + (r.format || "jpg"),
+      name: r.public_id.split("/").pop(),
+      date: r.created_at ? new Date(r.created_at).toLocaleDateString("de-AT") : ""
+    }));
+  } catch(e) {
+    console.error("Cloudinary Ladefehler:", e);
+    return [];
+  }
+}
+function savePhotosCache(albumId, ps) {
+  try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps)); } catch {}
+}
 
 const DEFAULT_ALBUMS = [
   { id: "turnier-2024",  name: "Turnier 2024",  icon: "🏆" },
@@ -469,7 +503,7 @@ async function uploadToCloudinary(file, albumId, onProgress) {
   fd.append("file", file);
   fd.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
   fd.append("folder", "ev-goss/" + albumId);
-  fd.append("context", "album=" + albumId);
+  fd.append("tags", "ev-goss-" + albumId);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -498,21 +532,36 @@ async function uploadToCloudinary(file, albumId, onProgress) {
   });
 }
 
-// ── Cloudinary: Fotos eines Albums laden ─────────────────────────
+// ── Cloudinary: Fotos eines Albums direkt laden ──────────────────
 async function loadPhotosFromCloudinary(albumId) {
-  // Wir speichern die Foto-Metadaten (URL + publicId) im localStorage
-  // als Cache, damit es schnell lädt
-  const key = "ev-goss-photos-" + albumId;
   try {
-    const v = localStorage.getItem(key);
-    return v ? JSON.parse(v) : [];
-  } catch { return []; }
+    // Cloudinary Search API – listet alle Bilder im Ordner ev-goss/<albumId>
+    const res = await fetch(
+      "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME +
+      "/image/list/ev-goss-" + albumId + ".json"
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.resources || []).map(r => ({
+      id: r.public_id,
+      publicId: r.public_id,
+      src: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME + "/image/upload/" + r.public_id + "." + r.format,
+      thumb: "https://res.cloudinary.com/" + CLOUDINARY_CLOUD_NAME + "/image/upload/w_400,h_400,c_fill/" + r.public_id + "." + r.format,
+      name: r.public_id.split("/").pop(),
+      date: new Date(r.created_at).toLocaleDateString("de-AT")
+    }));
+  } catch(e) {
+    // Fallback: lokaler Cache
+    try {
+      const v = localStorage.getItem("ev-goss-photos-" + albumId);
+      return v ? JSON.parse(v) : [];
+    } catch { return []; }
+  }
 }
 function savePhotosCache(albumId, ps) {
   try {
     localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(ps));
   } catch(e) {
-    // Cache voll – nur die letzten 50 merken
     const trimmed = ps.slice(-50);
     try { localStorage.setItem("ev-goss-photos-" + albumId, JSON.stringify(trimmed)); } catch {}
   }
@@ -772,7 +821,7 @@ async function handleFiles(files) {
         bars[i].bar.style.width = pct + "%";
         bars[i].pct.textContent = pct + "%";
       });
-      photos[currentAlbumId].push(photo);
+          photos[currentAlbumId].push(photo);
       savePhotosCache(currentAlbumId, photos[currentAlbumId]);
       uploaded++;
       renderPhotos();
@@ -786,9 +835,14 @@ async function handleFiles(files) {
 
   setTimeout(() => { wrap.innerHTML = ""; }, 1200);
   if (uploaded > 0) {
-    showToast(uploaded + " Foto" + (uploaded > 1 ? "s" : "") + " auf Cloudinary gespeichert ✓");
-    // Album-Übersicht aktualisieren
-    renderAlbums();
+    showToast(uploaded + " Foto" + (uploaded > 1 ? "s" : "") + " gespeichert ✓");
+    // Neu von Cloudinary laden – dann sehen es alle Besucher
+    setTimeout(async () => {
+      photos[currentAlbumId] = await loadPhotosFromCloudinary(currentAlbumId);
+      renderPhotos();
+      renderAlbums();
+      updateBadge();
+    }, 2000);
   }
 }
 
